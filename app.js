@@ -5,9 +5,11 @@ const bodyParser = require('body-parser');
 const graphqlHttp = require('express-graphql');
 const { buildSchema } = require('graphql');
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 const connect = require('./database/database');
 
-const event = require('./models/event');
+const Event = require('./models/event');
+const User = require('./models/user');
 
 // const graphqlSchema = require('./graphql/schema');
 // const graphqlResolver = require('./graphql/resolvers');
@@ -16,10 +18,19 @@ const event = require('./models/event');
 const app = express();
 const PORT = 3001;
 connect();
-const events = [];
 
 // app.use(bodyParser.urlencoded());    // x-www-form-urlencoded
 app.use(bodyParser.json());
+
+const user = userId => {
+    return User.findById(userId)
+        .then( user => {
+            return { ...user._doc, _id: user.id };
+        })
+        .catch( err => {
+            throw err;
+        });
+}
 
 app.use('/graphql',
     graphqlHttp({
@@ -30,6 +41,14 @@ app.use('/graphql',
                 description: String!
                 price: Float!
                 date: String!
+                creator: User!
+            }
+
+            type User {
+                _id: ID!
+                email: String!
+                password: String
+                createdEvents: [Event!]
             }
 
             input EventInput {
@@ -39,11 +58,17 @@ app.use('/graphql',
                 date: String!
             }
 
+            input UserInput {
+                email: String!
+                password: String!
+            }
+
             type RootQuery {
                 events: [Event!]!
             }
             type RootMutation {
-                createEvent(eventInput :EventInput): Event
+                createEvent(eventInput: EventInput): Event
+                createUser(userInput: UserInput): User
             }
             schema {
                 query: RootQuery
@@ -52,25 +77,67 @@ app.use('/graphql',
         `),
         rootValue: {
             events: () => {
-                return events;
+                return Event.find()
+                .populate('creator')
+                .then( events => {
+                    return events.map( ev => {
+                        return { ...ev._doc };
+                    });
+                })
+                .catch( err => {
+                    throw err;
+                });
             },
-            createEvent: (args) => {
-                // const event = {
-                //     _id: Math.random().toString(),
-                //     title: args.eventInput.title,
-                //     description: args.eventInput.description,
-                //     price: +args.eventInput.price,
-                //     date: args.eventInput.date
-                // }
+            createEvent: args => {
                 const event = new Event({
                     title: args.eventInput.title,
                     description: args.eventInput.description,
                     price: +args.eventInput.price,
-                    date: new Date(args.eventInput.date)
+                    date: new Date(args.eventInput.date),
+                    creator: '5ddd6ea11033182b40f9c6a6'
                 });
-
-                events.push(event);
-                return event;
+                let createdEvent;
+                return event
+                .save()
+                .then( result => {
+                    createdEvent = { ...result._doc, creator: user.bind(this, result._doc.creator) };
+                    return User.findById('5ddd6ea11033182b40f9c6a6');
+                }).then( user => {
+                    if(!user) {
+                        throw new Error('User not found.')
+                    }
+                    user.createdEvents.push(event);
+                    return user.save();
+                })
+                .then( result => {
+                    return createdEvent;
+                })
+                .catch(err => {
+                    console.log("Error Event.save(): ", err);
+                    throw err;
+                });
+            },
+            createUser: args => {
+                return User.findOne({ email: args.userInput.email }).then( user => {
+                    if(user) {
+                        throw new Error('User exists already ')
+                    }
+                    return bcrypt.hash(args.userInput.password, 12);
+                })
+                .then( hashedPassword => {
+                    const user = new User({
+                        email: args.userInput.email,
+                        password: hashedPassword
+                    });
+                    return user.save();
+                })
+                .then( result => {
+                    return { ...result._doc, password: null };
+                })
+                .catch( err => {
+                    throw err;
+                })
+                
             }
         },
         graphiql: true
